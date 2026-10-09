@@ -3,28 +3,36 @@ import { join } from "node:path";
 import { repoPath } from "./git.js";
 
 // Socket-proxy scopé : CONTAINERS, IMAGES, NETWORKS, POST uniquement.
-// L'URL du proxy est injectée via DOCKER_HOST (ex: tcp://socket-proxy:2375).
-const docker = new Dockerode({
-  socketPath: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
-});
+// DOCKER_HOST (ex: tcp://socket-proxy-deploy:2375) est prioritaire ; sinon,
+// on retombe sur un vrai socket Unix local via DOCKER_SOCKET.
+const dockerHost = process.env.DOCKER_HOST;
+
+const docker = dockerHost
+    ? new Dockerode({
+      host: dockerHost.replace(/^tcp:\/\//, "").split(":")[0],
+      port: Number(dockerHost.split(":").pop()),
+    })
+    : new Dockerode({
+      socketPath: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
+    });
 
 export async function buildAndRun(
-  projectId: string,
-  subdomain: string,
-  envVars: Record<string, string>
+    projectId: string,
+    subdomain: string,
+    envVars: Record<string, string>
 ): Promise<void> {
   const context = repoPath(projectId);
   const tag = `deploy-agent/${projectId}:latest`;
 
   // Build depuis le Dockerfile présent dans le repo cloné
   const buildStream = await docker.buildImage(
-    { context, src: ["."] },
-    { t: tag }
+      { context, src: ["."] },
+      { t: tag }
   );
 
   await new Promise<void>((resolve, reject) => {
     docker.modem.followProgress(buildStream, (err) =>
-      err ? reject(err) : resolve()
+        err ? reject(err) : resolve()
     );
   });
 
@@ -43,7 +51,7 @@ export async function buildAndRun(
     Image: tag,
     Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
     HostConfig: {
-      NetworkMode: "traefik-net",
+      NetworkMode: "proxy",
       RestartPolicy: { Name: "unless-stopped" },
     },
     Labels: {
@@ -58,12 +66,12 @@ export async function buildAndRun(
 }
 
 export async function getContainerStatus(
-  projectId: string
+    projectId: string
 ): Promise<"running" | "stopped" | "absent"> {
   try {
     const info = await docker
-      .getContainer(`project-${projectId}`)
-      .inspect();
+        .getContainer(`project-${projectId}`)
+        .inspect();
     return info.State.Running ? "running" : "stopped";
   } catch {
     return "absent";
