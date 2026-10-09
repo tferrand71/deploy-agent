@@ -2,12 +2,14 @@ import Fastify from "fastify";
 import projectsRoute from "./routes/projects.js";
 import secretsRoute from "./routes/secrets.js";
 import deployRoute from "./routes/deploy.js";
+import systemRoute from "./routes/system.js";
 
 const app = Fastify({ logger: true });
 
 app.register(projectsRoute);
 app.register(secretsRoute);
 app.register(deployRoute);
+app.register(systemRoute);
 
 app.get("/health", async () => ({ ok: true }));
 
