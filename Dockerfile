@@ -25,6 +25,10 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 agent
 
+# git (clone/pull des repos) + docker compose (redéploiement des conteneurs
+# existants) — nécessaires à l'exécution, pas seulement au build
+RUN apk add --no-cache git docker-cli docker-cli-compose
+
 # Runtime Prisma
 COPY --from=builder --chown=agent:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=agent:nodejs /app/prisma ./prisma
