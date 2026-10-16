@@ -8,10 +8,14 @@ import type { Stack } from "./stack.js";
 
 // Le post-install de @prisma/client lance "prisma generate" pendant "npm ci" :
 // il faut donc le schéma (et prisma.config.* s'il existe) dès l'étape deps.
-const depsCopy = (s: Stack) =>
-  s.hasPrisma
-    ? "COPY package.json package-lock.json prisma* ./"
-    : "COPY package.json package-lock.json ./";
+// Attention : un motif "prisma*" copierait le CONTENU du dossier à la racine,
+// d'où des COPY explicites.
+const depsCopy = (s: Stack) => {
+  const lines = ["COPY package.json package-lock.json ./"];
+  if (s.hasPrisma) lines.push("COPY prisma ./prisma");
+  if (s.hasPrismaConfig) lines.push("COPY prisma.config.* ./");
+  return lines.join("\n");
+};
 
 const PRISMA_BUILD_ENV =`# Prisma génère son client sans se connecter : une URL factice suffit au build
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"`;
