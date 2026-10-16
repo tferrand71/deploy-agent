@@ -112,10 +112,27 @@ export async function buildAndRun(
       { t: tag, dockerfile }
   );
 
+  // Le build peut échouer sans que followProgress renvoie d'erreur : l'échec
+  // est alors dans les événements (errorDetail). On remonte les dernières
+  // lignes de sortie pour que le message d'erreur soit lisible dans les logs.
   await new Promise<void>((resolve, reject) => {
-    docker.modem.followProgress(buildStream, (err) =>
-        err ? reject(err) : resolve()
-    );
+    docker.modem.followProgress(buildStream, (err, output: any[] = []) => {
+      if (err) return reject(err);
+      const failed = output.find((e) => e.error || e.errorDetail);
+      if (failed) {
+        const tail = output
+          .filter((e) => typeof e.stream === "string")
+          .map((e) => e.stream)
+          .join("")
+          .split("\n")
+          .slice(-40)
+          .join("\n");
+        return reject(
+            new Error(`Build Docker échoué : ${failed.error ?? failed.errorDetail?.message}\n${tail}`)
+        );
+      }
+      resolve();
+    });
   });
 
   // Migrations Prisma, avant de (re)lancer le conteneur applicatif
