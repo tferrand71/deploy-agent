@@ -65,7 +65,7 @@ const projectsRoute: FastifyPluginAsync = async (app) => {
           name: { type: "string", minLength: 1 },
           repoUrl: { type: "string", minLength: 1 },
           branch: { type: "string", minLength: 1 },
-          subdomain: { type: "string", pattern: "^[a-z0-9-]+$" },
+          subdomain: { type: "string", pattern: "^[a-z0-9.-]+$" },
         },
       },
     },
