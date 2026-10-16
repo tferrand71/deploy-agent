@@ -2,6 +2,7 @@ import Dockerode from "dockerode";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { repoPath } from "./git.js";
+import { prepareDockerfile } from "./dockerfile.js";
 
 // Socket-proxy scopé : CONTAINERS, IMAGES, NETWORKS, POST uniquement.
 // DOCKER_HOST (ex: tcp://socket-proxy-deploy:2375) est prioritaire ; sinon,
@@ -36,9 +37,9 @@ function needsDatabase(context: string): boolean {
  * Retourne null si rien n'est trouvé : on laisse alors Traefik faire sa
  * propre détection automatique (comportement précédent, inchangé).
  */
-function detectExposedPort(context: string): string | null {
+function detectExposedPort(dockerfilePath: string): string | null {
   try {
-    const dockerfile = readFileSync(join(context, "Dockerfile"), "utf-8");
+    const dockerfile = readFileSync(dockerfilePath, "utf-8");
     const matches = [...dockerfile.matchAll(/^EXPOSE\s+(\d+)/gm)];
     if (matches.length === 0) return null;
     return matches[matches.length - 1][1];
@@ -100,13 +101,15 @@ export async function buildAndRun(
 ): Promise<void> {
   const context = repoPath(projectId);
   const tag = `deploy-agent/${projectId}:latest`;
-  const hasDatabase = needsDatabase(context);
-  const exposedPort = detectExposedPort(context);
 
-  // Build depuis le Dockerfile présent dans le repo cloné
+  // Dockerfile du projet s'il existe, sinon un Dockerfile généré par template
+  const { dockerfile } = prepareDockerfile(context);
+  const hasDatabase = needsDatabase(context);
+  const exposedPort = detectExposedPort(join(context, dockerfile));
+
   const buildStream = await docker.buildImage(
       { context, src: ["."] },
-      { t: tag }
+      { t: tag, dockerfile }
   );
 
   await new Promise<void>((resolve, reject) => {
