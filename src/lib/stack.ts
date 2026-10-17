@@ -8,6 +8,8 @@ export interface Stack {
   /** Version majeure de Node, toujours dans SUPPORTED_NODE */
   nodeVersion: string;
   hasPrisma: boolean;
+  /** prisma.config.ts (ou .js/.mjs) présent à la racine (Prisma 7+) */
+  hasPrismaConfig: boolean;
   /** next.config contient "standalone" (sortie autonome) */
   nextStandalone: boolean;
   hasBuildScript: boolean;
@@ -69,6 +71,9 @@ function hasNextStandalone(context: string): boolean {
 export function detectStack(context: string): Stack | null {
   const pkg = readJson(join(context, "package.json"));
   const hasPrisma = existsSync(join(context, "prisma", "schema.prisma"));
+  const hasPrismaConfig = ["prisma.config.ts", "prisma.config.js", "prisma.config.mjs"].some((f) =>
+    existsSync(join(context, f))
+  );
   const hasComposer = existsSync(join(context, "composer.json"));
 
   if (pkg) {
@@ -76,6 +81,7 @@ export function detectStack(context: string): Stack | null {
     const common = {
       nodeVersion: detectNodeVersion(context, pkg),
       hasPrisma,
+      hasPrismaConfig,
       hasBuildScript: Boolean(pkg.scripts?.build),
       hasStartScript: Boolean(pkg.scripts?.start),
       hasComposer,
@@ -93,6 +99,7 @@ export function detectStack(context: string): Stack | null {
       kind: "php",
       nodeVersion: DEFAULT_NODE,
       hasPrisma: false,
+      hasPrismaConfig: false,
       nextStandalone: false,
       hasBuildScript: false,
       hasStartScript: false,
@@ -105,6 +112,7 @@ export function detectStack(context: string): Stack | null {
       kind: "static",
       nodeVersion: DEFAULT_NODE,
       hasPrisma: false,
+      hasPrismaConfig: false,
       nextStandalone: false,
       hasBuildScript: false,
       hasStartScript: false,

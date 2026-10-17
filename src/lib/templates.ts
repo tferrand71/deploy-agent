@@ -6,7 +6,18 @@ import type { Stack } from "./stack.js";
  * Aucun modèle, aucune génération libre : même stack = même Dockerfile.
  */
 
-const PRISMA_BUILD_ENV = `# Prisma génère son client sans se connecter : une URL factice suffit au build
+// Le post-install de @prisma/client lance "prisma generate" pendant "npm ci" :
+// il faut donc le schéma (et prisma.config.* s'il existe) dès l'étape deps.
+// Attention : un motif "prisma*" copierait le CONTENU du dossier à la racine,
+// d'où des COPY explicites.
+const depsCopy = (s: Stack) => {
+  const lines = ["COPY package.json package-lock.json ./"];
+  if (s.hasPrisma) lines.push("COPY prisma ./prisma");
+  if (s.hasPrismaConfig) lines.push("COPY prisma.config.* ./");
+  return lines.join("\n");
+};
+
+const PRISMA_BUILD_ENV =`# Prisma génère son client sans se connecter : une URL factice suffit au build
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"`;
 
 // Le CLI Prisma doit être présent dans l'image finale : deploy-agent lance
@@ -21,8 +32,8 @@ function nextjsStandalone(s: Stack): string {
   return `# Template nextjs-standalone (généré par deploy-agent)
 FROM node:${s.nodeVersion}-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+${depsCopy(s)}
+${s.hasPrisma ? PRISMA_BUILD_ENV + "\n" : ""}RUN npm ci
 
 FROM node:${s.nodeVersion}-alpine AS builder
 WORKDIR /app
@@ -54,8 +65,8 @@ function nextjsFull(s: Stack): string {
   return `# Template nextjs (généré par deploy-agent, sans sortie standalone)
 FROM node:${s.nodeVersion}-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+${depsCopy(s)}
+${s.hasPrisma ? PRISMA_BUILD_ENV + "\n" : ""}RUN npm ci
 
 FROM node:${s.nodeVersion}-alpine AS builder
 WORKDIR /app
@@ -87,8 +98,8 @@ function nodeGeneric(s: Stack): string {
   return `# Template node (généré par deploy-agent)
 FROM node:${s.nodeVersion}-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+${depsCopy(s)}
+${s.hasPrisma ? PRISMA_BUILD_ENV + "\n" : ""}RUN npm ci
 
 FROM node:${s.nodeVersion}-alpine AS builder
 WORKDIR /app

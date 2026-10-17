@@ -17,9 +17,16 @@ export async function cloneOrPull(
   const git = simpleGit();
 
   if (existsSync(dest)) {
-    await simpleGit(dest).fetch("origin").then(() =>
-      simpleGit(dest).reset(["--hard", `origin/${branch}`])
-    );
+    // L'URL et la branche peuvent avoir changé depuis le dernier déploiement :
+    // on met à jour le remote et on récupère explicitement la branche demandée
+    // (un clone --depth 1 ne suit que l'ancienne branche par défaut).
+    const local = simpleGit(dest);
+    await local.remote(["set-url", "origin", repoUrl]);
+    await local.fetch([
+      "origin",
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+    await local.reset(["--hard", `origin/${branch}`]);
   } else {
     await git.clone(repoUrl, dest, ["--branch", branch, "--depth", "1"]);
   }

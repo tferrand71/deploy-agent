@@ -64,12 +64,21 @@ async function runBuild(
 
   // Les erreurs de build (RUN qui échoue…) arrivent dans le flux, pas dans `err`
   await new Promise<void>((ok, fail) => {
-    docker.modem.followProgress(stream, (err, events: Array<{ error?: string; errorDetail?: { message?: string } }>) => {
-      if (err) return fail(err);
-      const failed = events.find((e) => e.error || e.errorDetail);
-      if (failed) return fail(new Error(failed.errorDetail?.message ?? failed.error));
-      ok();
-    });
+    docker.modem.followProgress(
+        stream,
+        (err, events: Array<{ stream?: string; error?: string; errorDetail?: { message?: string } }> = []) => {
+          if (err) return fail(err);
+          const failed = events.find((e) => e.error || e.errorDetail);
+          if (!failed) return ok();
+          const tail = events
+              .map((e) => e.stream ?? "")
+              .join("")
+              .split("\n")
+              .slice(-40)
+              .join("\n");
+          fail(new Error(`Build Docker échoué : ${failed.error ?? failed.errorDetail?.message}\n${tail}`));
+        }
+    );
   });
 }
 
