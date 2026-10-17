@@ -42,7 +42,10 @@ const deployRoute: FastifyPluginAsync = async (app) => {
           envVars[secret.key] = decrypt(secret.encryptedValue);
         }
 
-        await buildAndRun(id, project.subdomain, envVars);
+        await buildAndRun(id, project.subdomain, envVars, {
+          info: (msg) => app.log.info(`[${project.name}] ${msg}`),
+          warn: (msg) => app.log.warn(`[${project.name}] ${msg}`),
+        });
 
         await prisma.project.update({
           where: { id },

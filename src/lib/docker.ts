@@ -1,8 +1,9 @@
 import Dockerode from "dockerode";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { repoPath } from "./git.js";
 import { prepareDockerfile } from "./dockerfile.js";
+import { loadComposeTemplate } from "./composeTemplate.js";
 
 // Socket-proxy scopé : CONTAINERS, IMAGES, NETWORKS, POST uniquement.
 // DOCKER_HOST (ex: tcp://socket-proxy-deploy:2375) est prioritaire ; sinon,
@@ -18,14 +19,18 @@ const docker = dockerHost
       socketPath: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
     });
 
+const PROXY_NETWORK = "proxy";
+const DB_NETWORK = "db";
+
+type Logger = { info: (msg: string) => void; warn: (msg: string) => void };
+
 function toEnvArray(envVars: Record<string, string>): string[] {
   return Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
 }
 
 /**
  * Le projet a-t-il une base PostgreSQL (Prisma) ? Détecté automatiquement
- * par la présence de prisma/schema.prisma dans le repo cloné — aucun champ
- * à ajouter en base pour ça.
+ * par la présence de prisma/schema.prisma dans le repo cloné.
  */
 function needsDatabase(context: string): boolean {
   return existsSync(join(context, "prisma", "schema.prisma"));
@@ -33,9 +38,7 @@ function needsDatabase(context: string): boolean {
 
 /**
  * Port exposé par le Dockerfile du projet, lu depuis sa dernière ligne
- * EXPOSE (les lignes commentées, ex. "# EXPOSE 80", sont ignorées).
- * Retourne null si rien n'est trouvé : on laisse alors Traefik faire sa
- * propre détection automatique (comportement précédent, inchangé).
+ * EXPOSE. Retourne null si rien n'est trouvé : Traefik détecte alors seul.
  */
 function detectExposedPort(dockerfilePath: string): string | null {
   try {
@@ -48,15 +51,45 @@ function detectExposedPort(dockerfilePath: string): string | null {
   }
 }
 
+async function runBuild(
+    context: string,
+    tag: string,
+    dockerfile: string,
+    buildargs: Record<string, string>
+): Promise<void> {
+  const stream = await docker.buildImage(
+      { context, src: ["."] },
+      { t: tag, dockerfile, buildargs }
+  );
+
+  // Les erreurs de build (RUN qui échoue…) arrivent dans le flux, pas dans `err`
+  await new Promise<void>((ok, fail) => {
+    docker.modem.followProgress(stream, (err, events: Array<{ error?: string; errorDetail?: { message?: string } }>) => {
+      if (err) return fail(err);
+      const failed = events.find((e) => e.error || e.errorDetail);
+      if (failed) return fail(new Error(failed.errorDetail?.message ?? failed.error));
+      ok();
+    });
+  });
+}
+
+async function assertNetworksExist(networks: string[]): Promise<void> {
+  for (const name of networks) {
+    try {
+      await docker.getNetwork(name).inspect();
+    } catch {
+      throw new Error(`Réseau Docker "${name}" introuvable`);
+    }
+  }
+}
+
 /**
  * Lance "prisma migrate deploy" dans un conteneur jetable construit depuis
  * l'image déjà buildée du projet (même Env, réseau "db" uniquement, pas de
- * Traefik). Ne passe jamais par "docker exec" : uniquement create/start/
- * wait/logs/remove, déjà couverts par le scope CONTAINERS+POST du
- * socket-proxy — aucune permission supplémentaire à activer.
+ * Traefik). Uniquement create/start/wait/logs/remove : couvert par le scope
+ * CONTAINERS+POST du socket-proxy.
  *
- * Nécessite que le Dockerfile du projet copie node_modules/prisma (le CLI,
- * pas seulement @prisma/client) dans l'image finale.
+ * Nécessite que l'image finale contienne node_modules/prisma (le CLI).
  */
 async function runPrismaMigrations(
     tag: string,
@@ -78,7 +111,7 @@ async function runPrismaMigrations(
     Cmd: ["node_modules/prisma/build/index.js", "migrate", "deploy"],
     Env: toEnvArray(envVars),
     HostConfig: {
-      NetworkMode: "db",
+      NetworkMode: DB_NETWORK,
     },
   });
 
@@ -94,72 +127,104 @@ async function runPrismaMigrations(
   }
 }
 
+/**
+ * Configuration du déploiement, par ordre de priorité :
+ *  - compose.yml du repo (template) : réseaux, labels, env, build args, restart ;
+ *  - sinon détection automatique : réseau proxy (+ db si Prisma), labels Traefik par défaut.
+ * Le Dockerfile vient du compose (build.dockerfile), sinon du repo, sinon d'un template généré.
+ */
 export async function buildAndRun(
     projectId: string,
     subdomain: string,
-    envVars: Record<string, string>
+    secrets: Record<string, string>,
+    log: Logger
 ): Promise<void> {
-  const context = repoPath(projectId);
+  const repoDir = repoPath(projectId);
   const tag = `deploy-agent/${projectId}:latest`;
 
-  // Dockerfile du projet s'il existe, sinon un Dockerfile généré par template
-  const { dockerfile } = prepareDockerfile(context);
-  const hasDatabase = needsDatabase(context);
-  const exposedPort = detectExposedPort(join(context, dockerfile));
-
-  const buildStream = await docker.buildImage(
-      { context, src: ["."] },
-      { t: tag, dockerfile }
-  );
-
-  await new Promise<void>((resolve, reject) => {
-    docker.modem.followProgress(buildStream, (err) =>
-        err ? reject(err) : resolve()
-    );
-  });
-
-  // Migrations Prisma, avant de (re)lancer le conteneur applicatif
-  if (hasDatabase) {
-    await runPrismaMigrations(tag, projectId, envVars);
+  const loaded = await loadComposeTemplate(repoDir, { DOMAIN: subdomain, ...secrets });
+  const compose = loaded?.template;
+  if (compose) {
+    log.info(`compose.yml : service "${compose.serviceName}", réseaux [${compose.networks.join(", ")}]`);
+    if (loaded.missing.length) {
+      log.warn(`Variables absentes des secrets, remplacées par "" : ${loaded.missing.join(", ")}`);
+    }
   }
 
-  // Arrêt + suppression du conteneur précédent s'il existe
+  const context = resolve(repoDir, compose?.buildContext ?? ".");
+  if (context !== repoDir && !context.startsWith(repoDir + sep)) {
+    throw new Error(`build.context sort du dépôt : ${compose?.buildContext}`);
+  }
+
+  const dockerfile = compose?.dockerfile ?? prepareDockerfile(context).dockerfile;
+  const hasDatabase = needsDatabase(context);
+
+  const networks = compose?.networks.length
+      ? compose.networks
+      : hasDatabase ? [PROXY_NETWORK, DB_NETWORK] : [PROXY_NETWORK];
+  await assertNetworksExist(networks);
+
+  // NEXT_PUBLIC_* sont figées dans le bundle JS au build : toujours passées en build args
+  const buildArgs: Record<string, string> = {};
+  for (const [k, v] of Object.entries(secrets)) {
+    if (k.startsWith("NEXT_PUBLIC_")) buildArgs[k] = v;
+  }
+  Object.assign(buildArgs, compose?.buildArgs);
+
+  await runBuild(context, tag, dockerfile, buildArgs);
+
+  const env = { ...secrets, ...compose?.environment };
+
+  // Migrations Prisma avant de (re)lancer le conteneur applicatif
+  if (hasDatabase) {
+    await runPrismaMigrations(tag, projectId, env);
+  }
+
+  let labels: Record<string, string>;
+  if (compose && Object.keys(compose.labels).length) {
+    labels = { ...compose.labels };
+  } else {
+    labels = {
+      "traefik.enable": "true",
+      [`traefik.http.routers.${projectId}.rule`]: `Host(\`${subdomain}\`)`,
+      [`traefik.http.routers.${projectId}.entrypoints`]: "websecure",
+      [`traefik.http.routers.${projectId}.tls.certresolver`]: "letsencrypt",
+    };
+    const exposedPort = detectExposedPort(join(context, dockerfile));
+    if (exposedPort) {
+      labels[`traefik.http.services.${projectId}.loadbalancer.server.port`] = exposedPort;
+    }
+  }
+  // Sur plusieurs réseaux, Traefik doit savoir lequel utiliser, sinon il peut viser le réseau db
+  if (networks.length > 1 && !labels["traefik.docker.network"]) {
+    labels["traefik.docker.network"] = networks[0];
+  }
+
   const containerName = `project-${projectId}`;
   try {
-    const old = docker.getContainer(containerName);
-    await old.stop();
-    await old.remove();
+    await docker.getContainer(containerName).remove({ force: true });
   } catch {
-    // Pas de conteneur précédent, c'est normal
+    // Pas de conteneur précédent
   }
 
-  const labels: Record<string, string> = {
-    "traefik.enable": "true",
-    [`traefik.http.routers.${projectId}.rule`]: `Host(\`${subdomain}\`)`,
-    [`traefik.http.routers.${projectId}.entrypoints`]: "websecure",
-    [`traefik.http.routers.${projectId}.tls.certresolver`]: "letsencrypt",
-  };
-  if (exposedPort) {
-    labels[`traefik.http.services.${projectId}.loadbalancer.server.port`] = exposedPort;
-  }
-
+  const restart = compose?.restart ?? "unless-stopped";
   const container = await docker.createContainer({
     name: containerName,
     Image: tag,
-    Env: toEnvArray(envVars),
-    HostConfig: {
-      NetworkMode: "proxy",
-      RestartPolicy: { Name: "unless-stopped" },
-    },
+    Env: toEnvArray(env),
     Labels: labels,
+    HostConfig: {
+      NetworkMode: networks[0],
+      RestartPolicy: { Name: restart === "no" ? "" : restart },
+    },
   });
 
-  await container.start();
-
-  // Si l'app a besoin de PostgreSQL, l'attacher aussi au réseau "db"
-  if (hasDatabase) {
-    await docker.getNetwork("db").connect({ Container: containerName });
+  // Réseaux secondaires branchés avant le démarrage : l'app peut joindre la db dès le boot
+  for (const network of networks.slice(1)) {
+    await docker.getNetwork(network).connect({ Container: container.id });
   }
+
+  await container.start();
 }
 
 export async function getContainerStatus(
