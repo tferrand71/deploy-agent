@@ -35,12 +35,16 @@ const deployRoute: FastifyPluginAsync = async (app) => {
       reply.status(202).send({ message: "Déploiement démarré" });
 
       try {
-        const commit = await cloneOrPull(id, project.repoUrl, project.branch);
-
         const envVars: Record<string, string> = {};
         for (const secret of project.secrets) {
           envVars[secret.key] = decrypt(secret.encryptedValue);
         }
+
+        // GIT_TOKEN sert uniquement au clonage d'un dépôt privé : jamais transmis à l'app
+        const gitToken = envVars.GIT_TOKEN;
+        delete envVars.GIT_TOKEN;
+
+        const commit = await cloneOrPull(id, project.repoUrl, project.branch, gitToken);
 
         await buildAndRun(id, project.subdomain, envVars, {
           info: (msg) => app.log.info(`[${project.name}] ${msg}`),
