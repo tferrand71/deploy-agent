@@ -29,11 +29,21 @@ function toEnvArray(envVars: Record<string, string>): string[] {
 }
 
 /**
- * Le projet a-t-il une base PostgreSQL (Prisma) ? Détecté automatiquement
- * par la présence de prisma/schema.prisma dans le repo cloné.
+ * Le projet utilise-t-il le PostgreSQL partagé ? Schéma Prisma avec provider "postgresql"
+ * (un projet SQLite/libsql distant comme Turso n'a pas besoin du réseau db).
  */
 function needsDatabase(context: string): boolean {
-  return existsSync(join(context, "prisma", "schema.prisma"));
+  try {
+    const schema = readFileSync(join(context, "prisma", "schema.prisma"), "utf-8");
+    return /provider\s*=\s*"postgresql"/.test(schema);
+  } catch {
+    return false;
+  }
+}
+
+/** Migrations à appliquer seulement si le repo en versionne (prisma/migrations). */
+function hasPrismaMigrations(context: string): boolean {
+  return existsSync(join(context, "prisma", "migrations"));
 }
 
 /**
@@ -185,7 +195,7 @@ export async function buildAndRun(
   const env = { ...secrets, ...compose?.environment };
 
   // Migrations Prisma avant de (re)lancer le conteneur applicatif
-  if (hasDatabase) {
+  if (hasDatabase && hasPrismaMigrations(context)) {
     await runPrismaMigrations(tag, projectId, env);
   }
 
