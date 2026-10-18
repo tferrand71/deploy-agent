@@ -14,7 +14,10 @@ export type ServiceTemplate = {
   networks: string[];
   labels: Record<string, string>;
   restart: string;
+  volumes: VolumeMount[];
 };
+
+export type VolumeMount = { name: string; target: string; readOnly: boolean };
 
 type RawService = {
   build?: string | { context?: string; dockerfile?: string; args?: unknown };
@@ -22,12 +25,53 @@ type RawService = {
   networks?: unknown;
   labels?: unknown;
   restart?: string;
+  volumes?: unknown;
 };
 
 type RawCompose = {
   services?: Record<string, RawService>;
   networks?: Record<string, { name?: string } | null>;
+  volumes?: Record<string, unknown>;
 };
+
+const VOLUME_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+/**
+ * Volumes nommés uniquement (déclarés dans `volumes:` à la racine du compose).
+ * Les montages de dossiers de l'hôte sont refusés : un repo ne doit pas pouvoir monter / ou le socket Docker.
+ */
+function parseVolumes(raw: unknown, declared: Record<string, unknown>, file: string): VolumeMount[] {
+  if (!raw) return [];
+  if (!Array.isArray(raw)) throw new Error(`${file} : "volumes" du service doit être une liste`);
+
+  return raw.map((entry) => {
+    let source: string | undefined;
+    let target: string | undefined;
+    let readOnly = false;
+
+    if (typeof entry === "string") {
+      const [s, t, mode] = entry.split(":");
+      source = s;
+      target = t;
+      readOnly = mode === "ro";
+    } else if (entry && typeof entry === "object") {
+      const e = entry as { type?: string; source?: string; target?: string; read_only?: boolean };
+      if (e.type && e.type !== "volume") throw new Error(`${file} : seuls les volumes nommés sont autorisés`);
+      source = e.source;
+      target = e.target;
+      readOnly = !!e.read_only;
+    }
+
+    if (!source || !target) throw new Error(`${file} : volume mal formé`);
+    if (!VOLUME_NAME.test(source)) {
+      throw new Error(`${file} : "${source}" refusé, seuls les volumes nommés sont autorisés (pas de dossier de l'hôte)`);
+    }
+    if (!(source in declared)) throw new Error(`${file} : volume "${source}" non déclaré dans "volumes:"`);
+    if (!target.startsWith("/") || target.includes("..")) throw new Error(`${file} : cible de volume invalide "${target}"`);
+
+    return { name: source, target, readOnly };
+  });
+}
 
 // Interpolation façon docker compose : $$, ${VAR}, ${VAR:-défaut}, ${VAR-défaut}, $VAR
 export function interpolate(value: string, vars: Record<string, string>, missing: Set<string>): string {
@@ -126,6 +170,7 @@ export async function loadComposeTemplate(
     networks,
     labels: resolveRecord(svc.labels, vars, missing),
     restart: svc.restart ?? "unless-stopped",
+    volumes: parseVolumes(svc.volumes, doc?.volumes ?? {}, file),
   };
 
   return { template, missing: [...missing] };

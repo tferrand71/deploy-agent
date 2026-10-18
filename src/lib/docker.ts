@@ -235,6 +235,13 @@ export async function buildAndRun(
     HostConfig: {
       NetworkMode: networks[0],
       RestartPolicy: { Name: restart === "no" ? "" : restart },
+      // Volume préfixé par le projet : deux projets ne partagent jamais un volume par erreur
+      Mounts: (compose?.volumes ?? []).map((v) => ({
+        Type: "volume" as const,
+        Source: `${projectId}_${v.name}`,
+        Target: v.target,
+        ReadOnly: v.readOnly,
+      })),
     },
   });
 
