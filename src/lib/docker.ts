@@ -69,7 +69,8 @@ async function runBuild(
 ): Promise<void> {
   const stream = await docker.buildImage(
       { context, src: ["."] },
-      { t: tag, dockerfile, buildargs }
+      // forcerm : supprime aussi les conteneurs intermédiaires d'un build raté
+      { t: tag, dockerfile, buildargs, forcerm: true }
   );
 
   // Les erreurs de build (RUN qui échoue…) arrivent dans le flux, pas dans `err`
@@ -190,6 +191,9 @@ export async function buildAndRun(
   }
   Object.assign(buildArgs, compose?.buildArgs);
 
+  // Image actuellement taguée : elle sera supprimée une fois la nouvelle démarrée
+  const previousImageId = await getImageId(tag);
+
   await runBuild(context, tag, dockerfile, buildArgs);
 
   const env = { ...secrets, ...compose?.environment };
@@ -251,6 +255,24 @@ export async function buildAndRun(
   }
 
   await container.start();
+
+  // Sans ça, chaque déploiement laisse une image sans tag de 1,5 à 3 Go sur le disque
+  if (previousImageId && previousImageId !== (await getImageId(tag))) {
+    try {
+      await docker.getImage(previousImageId).remove();
+      log.info(`Ancienne image supprimée : ${previousImageId.slice(7, 19)}`);
+    } catch (err) {
+      log.warn(`Ancienne image conservée (${previousImageId.slice(7, 19)}) : ${(err as Error).message}`);
+    }
+  }
+}
+
+async function getImageId(tag: string): Promise<string | null> {
+  try {
+    return (await docker.getImage(tag).inspect()).Id;
+  } catch {
+    return null;
+  }
 }
 
 export async function getContainerStatus(
