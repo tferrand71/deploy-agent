@@ -265,6 +265,17 @@ export async function buildAndRun(
       log.warn(`Ancienne image conservée (${previousImageId.slice(7, 19)}) : ${(err as Error).message}`);
     }
   }
+
+  // Étapes intermédiaires des Dockerfile multi-stage (deps, builder…) : restent sans tag
+  // à chaque build. Gardées 24 h pour servir de cache aux redéploiements rapprochés.
+  try {
+    const { SpaceReclaimed } = await docker.pruneImages({
+      filters: { dangling: ["true"], until: ["24h"] },
+    });
+    if (SpaceReclaimed) log.info(`Images intermédiaires supprimées : ${Math.round(SpaceReclaimed / 1e6)} Mo`);
+  } catch (err) {
+    log.warn(`Nettoyage des images intermédiaires impossible : ${(err as Error).message}`);
+  }
 }
 
 async function getImageId(tag: string): Promise<string | null> {
