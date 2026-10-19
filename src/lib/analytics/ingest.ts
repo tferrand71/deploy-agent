@@ -115,7 +115,9 @@ export async function ingestOnce(log: FastifyBaseLogger): Promise<number> {
     const hit = parseLine(line.slice(sp + 1));
     if (!hit || !hit.router) continue; // requêtes sans site (scans de l'IP nue)
     // Routeur d'un conteneur disparu : on garde son nom plutôt que perdre la ligne
-    const rawHost = hit.host ?? hosts.get(hit.router) ?? hit.router;
+    // Variantes de redirection (harmonie-www, harmonie-apex…) : même site que le routeur principal
+    const rawHost =
+        hit.host ?? hosts.get(hit.router) ?? hosts.get(hit.router.replace(/-(www|apex|http)$/, "")) ?? hit.router;
 
     const host = normalizeHost(rawHost);
     const date = new Date(Number(tsKey(ts) / 1_000_000n));
