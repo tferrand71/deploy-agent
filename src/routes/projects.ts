@@ -1,5 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { prisma } from "../lib/db.js";
+import { removeProjectResources } from "../lib/docker.js";
+import { removeRepo } from "../lib/git.js";
 
 const projectsRoute: FastifyPluginAsync = async (app) => {
   app.get("/projects", async () => {
@@ -82,6 +84,37 @@ const projectsRoute: FastifyPluginAsync = async (app) => {
       }
 
       return prisma.project.update({ where: { id }, data: req.body });
+    },
+  });
+
+  // Suppression : conteneur, image et clone retirés, puis le projet et ses
+  // secrets (cascade). Volumes et bases de données ne sont jamais touchés.
+  app.delete<{ Params: { id: string } }>("/projects/:id", {
+    schema: {
+      params: {
+        type: "object",
+        required: ["id"],
+        properties: { id: { type: "string", pattern: "^[a-z0-9]+$" } },
+      },
+    },
+    handler: async (req, reply) => {
+      const { id } = req.params;
+
+      const project = await prisma.project.findUnique({ where: { id } });
+      if (!project) return reply.status(404).send({ error: "Projet introuvable" });
+
+      if (project.status === "BUILDING") {
+        return reply
+            .status(409)
+            .send({ error: "Un déploiement est en cours : attends la fin avant de supprimer" });
+      }
+
+      const removed = await removeProjectResources(id);
+      await removeRepo(id);
+      await prisma.project.delete({ where: { id } });
+
+      req.log.info({ projectId: id, name: project.name, removed }, "Projet supprimé");
+      return { removed, keptVolumesPrefix: `${id}_` };
     },
   });
 };

@@ -10,7 +10,7 @@ import { loadComposeTemplate } from "./composeTemplate.js";
 // on retombe sur un vrai socket Unix local via DOCKER_SOCKET.
 const dockerHost = process.env.DOCKER_HOST;
 
-const docker = dockerHost
+export const docker = dockerHost
     ? new Dockerode({
       host: dockerHost.replace(/^tcp:\/\//, "").split(":")[0],
       port: Number(dockerHost.split(":").pop()),
@@ -276,6 +276,36 @@ export async function buildAndRun(
   } catch (err) {
     log.warn(`Nettoyage des images intermédiaires impossible : ${(err as Error).message}`);
   }
+}
+
+/**
+ * Retire tout ce que deploy-agent a créé pour un projet côté Docker :
+ * conteneur applicatif, conteneur de migration résiduel, image.
+ * Les volumes nommés (`<id>_*`) sont volontairement conservés : ils
+ * contiennent des données (fichiers envoyés…) et le socket-proxy
+ * n'autorise de toute façon pas leur suppression.
+ */
+export async function removeProjectResources(projectId: string): Promise<string[]> {
+  const removed: string[] = [];
+
+  for (const name of [`project-${projectId}`, `project-${projectId}-migrate`]) {
+    try {
+      await docker.getContainer(name).remove({ force: true });
+      removed.push(`conteneur ${name}`);
+    } catch {
+      // Absent : projet jamais déployé ou déjà nettoyé
+    }
+  }
+
+  const tag = `deploy-agent/${projectId}:latest`;
+  try {
+    await docker.getImage(tag).remove();
+    removed.push(`image ${tag}`);
+  } catch {
+    // Pas d'image
+  }
+
+  return removed;
 }
 
 async function getImageId(tag: string): Promise<string | null> {

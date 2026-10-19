@@ -1,6 +1,7 @@
 import { simpleGit } from "simple-git";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 
 const REPOS_DIR = process.env.REPOS_DIR ?? "/tmp/deploy-agent/repos";
 
@@ -16,6 +17,15 @@ function gitConfig(token?: string): string[] {
   if (!token) return [];
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return [`http.extraHeader=Authorization: Basic ${basic}`];
+}
+
+/** Supprime le clone local d'un projet (refuse tout chemin hors de REPOS_DIR). */
+export async function removeRepo(projectId: string): Promise<void> {
+  const dest = resolve(repoPath(projectId));
+  if (!dest.startsWith(resolve(REPOS_DIR) + sep)) {
+    throw new Error(`Chemin de dépôt invalide : ${projectId}`);
+  }
+  await rm(dest, { recursive: true, force: true });
 }
 
 export async function cloneOrPull(

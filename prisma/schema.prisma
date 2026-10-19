@@ -38,3 +38,33 @@ enum ProjectStatus {
   RUNNING
   FAILED
 }
+
+// Une requête HTTP servie par Traefik, lue dans ses journaux d'accès.
+// Aucune IP en clair : `visitor` est une empreinte salée qui change chaque jour.
+model AnalyticsHit {
+  id         BigInt   @id @default(autoincrement())
+  ts         DateTime
+  host       String
+  path       String
+  method     String
+  status     Int
+  durationMs Int
+  bytes      Int
+  visitor    String
+  referrer   String?
+  browser    String?
+  os         String?
+  device     String?
+  bot        Boolean  @default(false)
+  pageview   Boolean  @default(false)
+
+  @@index([ts])
+  @@index([host, ts])
+}
+
+// Curseur de lecture des journaux et sels quotidiens.
+model AnalyticsState {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
