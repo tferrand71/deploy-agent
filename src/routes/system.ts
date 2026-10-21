@@ -150,6 +150,47 @@ const systemRoute: FastifyPluginAsync = async (app) => {
         .send({ error: "Impossible de lire les stats conteneurs" });
     }
   });
+
+  // Stockage par conteneur : couche inscriptible (fichiers créés ou modifiés dans le conteneur),
+  // part de l'image (couches partagées) et volumes nommés. Calcul plus lent que /system/containers,
+  // d'où une route à part, interrogée moins souvent par le tableau de bord.
+  app.get("/system/storage", async (_req, reply) => {
+    try {
+      const [list, df] = await Promise.all([
+        docker.listContainers({ size: true }),
+        docker.df().catch(() => null),
+      ]);
+
+      // taille de chaque volume nommé (-1 si Docker ne l'a pas calculée)
+      const volumeSize = new Map<string, number>();
+      for (const v of df?.Volumes ?? []) {
+        const size = v.UsageData?.Size;
+        if (typeof size === "number" && size >= 0) volumeSize.set(v.Name, size);
+      }
+
+      return list.map((info) => {
+        // tailles présentes dans la réponse Docker (absentes des types de dockerode)
+        const sizes = info as Dockerode.ContainerInfo & { SizeRw?: number; SizeRootFs?: number };
+        const writable = sizes.SizeRw ?? 0;
+        const rootfs = sizes.SizeRootFs ?? 0;
+        const volumes = (info.Mounts ?? [])
+          .filter((m) => m.Type === "volume" && m.Name)
+          .map((m) => ({ name: m.Name as string, sizeBytes: volumeSize.get(m.Name as string) ?? null }));
+        const volumesBytes = volumes.reduce((sum, v) => sum + (v.sizeBytes ?? 0), 0);
+        return {
+          id: info.Id.slice(0, 12),
+          name: (info.Names[0] ?? "").replace(/^\//, ""),
+          writableBytes: writable,
+          imageBytes: Math.max(0, rootfs - writable),
+          volumes,
+          totalBytes: writable + volumesBytes,
+        };
+      });
+    } catch (err) {
+      app.log.error(err, "system/storage error");
+      reply.status(500).send({ error: "Impossible de lire le stockage des conteneurs" });
+    }
+  });
 };
 
 export default systemRoute;
