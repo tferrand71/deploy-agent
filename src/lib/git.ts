@@ -1,6 +1,5 @@
 import { simpleGit } from "simple-git";
 import { join, resolve, sep } from "node:path";
-import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 
 const REPOS_DIR = process.env.REPOS_DIR ?? "/tmp/deploy-agent/repos";
@@ -38,20 +37,11 @@ export async function cloneOrPull(
   const config = gitConfig(token);
   const git = simpleGit({ config });
 
-  if (existsSync(dest)) {
-    // L'URL et la branche peuvent avoir changé depuis le dernier déploiement :
-    // on met à jour le remote et on récupère explicitement la branche demandée
-    // (un clone --depth 1 ne suit que l'ancienne branche par défaut).
-    const local = simpleGit({ baseDir: dest, config });
-    await local.remote(["set-url", "origin", repoUrl]);
-    await local.fetch([
-      "origin",
-      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
-    ]);
-    await local.reset(["--hard", `origin/${branch}`]);
-  } else {
-    await git.clone(repoUrl, dest, ["--branch", branch, "--depth", "1"]);
-  }
+  // Clone frais à chaque déploiement : un clone existant peut être corrompu
+  // (objets git manquants), ce qui faisait planter le processus pendant un fetch.
+  // Un clone --depth 1 est rapide, et l'URL/la branche sont toujours à jour.
+  await removeRepo(projectId);
+  await git.clone(repoUrl, dest, ["--branch", branch, "--depth", "1"]);
 
   const log = await simpleGit(dest).log({ maxCount: 1 });
   return log.latest?.hash ?? "unknown";
