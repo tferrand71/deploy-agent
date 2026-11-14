@@ -5,7 +5,7 @@ import { repoPath } from "./git.js";
 import { prepareDockerfile } from "./dockerfile.js";
 import { loadComposeTemplate } from "./composeTemplate.js";
 
-// Socket-proxy scopé : CONTAINERS, IMAGES, NETWORKS, POST uniquement.
+// Socket-proxy scopé : CONTAINERS, IMAGES, NETWORKS, BUILD, POST uniquement.
 // DOCKER_HOST (ex: tcp://socket-proxy-deploy:2375) est prioritaire ; sinon,
 // on retombe sur un vrai socket Unix local via DOCKER_SOCKET.
 const dockerHost = process.env.DOCKER_HOST;
@@ -21,6 +21,11 @@ export const docker = dockerHost
 
 const PROXY_NETWORK = "proxy";
 const DB_NETWORK = "db";
+
+// Paramètre `until` du nettoyage du cache de build, en heures (variable d'environnement
+// BUILD_CACHE_KEEP_HOURS, 48 par défaut). Valeur invalide ou inférieure à 1 : 48.
+const keepHours = Number(process.env.BUILD_CACHE_KEEP_HOURS);
+const BUILD_CACHE_KEEP_HOURS = Number.isFinite(keepHours) && keepHours >= 1 ? Math.floor(keepHours) : 48;
 
 type Logger = { info: (msg: string) => void; warn: (msg: string) => void };
 
@@ -275,6 +280,23 @@ export async function buildAndRun(
     if (SpaceReclaimed) log.info(`Images intermédiaires supprimées : ${Math.round(SpaceReclaimed / 1e6)} Mo`);
   } catch (err) {
     log.warn(`Nettoyage des images intermédiaires impossible : ${(err as Error).message}`);
+  }
+
+  // Cache de build BuildKit : indépendant des images, il s'accumulait sans limite (14 Go
+  // constatés sur le VPS). On le purge après chaque déploiement avec le filtre `until` du démon.
+  // Constaté : ce filtre n'épargne pas tout le cache récent (environ la moitié a été supprimée
+  // juste après un build), donc le build suivant repart en partie à froid. C'est le prix d'un
+  // disque borné ; BuildKit ne supprime jamais un cache en cours d'utilisation.
+  // Nécessite BUILD=1 sur le socket-proxy (route /build/prune).
+  try {
+    const opts = { all: true, filters: { until: [`${BUILD_CACHE_KEEP_HOURS}h`] } };
+    // Les types de dockerode ne déclarent pas `all` ni `filters` pour pruneBuilder, l'API les accepte.
+    const { SpaceReclaimed } = await docker.pruneBuilder(opts as unknown as Dockerode.PruneBuilderOptions);
+    if (SpaceReclaimed) {
+      log.info(`Cache de build supprimé : ${Math.round(SpaceReclaimed / 1e6)} Mo (filtre until=${BUILD_CACHE_KEEP_HOURS}h)`);
+    }
+  } catch (err) {
+    log.warn(`Nettoyage du cache de build impossible : ${(err as Error).message}`);
   }
 }
 
