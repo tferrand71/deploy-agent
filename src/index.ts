@@ -7,8 +7,16 @@ import redeployRoute from "./routes/redeploy.js";
 import analyticsRoute from "./routes/analytics.js";
 import { startAnalyticsIngest } from "./lib/analytics/ingest.js";
 import { prisma } from "./lib/db.js";
+import { createAuthHook, loadAgentToken } from "./lib/auth.js";
+
+// Échec « fermé » : sans jeton valide dans AGENT_API_TOKEN, le service ne démarre pas.
+const agentToken = loadAgentToken();
 
 const app = Fastify({ logger: true });
+
+// Authentification de toute l'API, enregistrée AVANT les routes pour toutes les couvrir,
+// y compris celles ajoutées plus tard. Seule /health reste ouverte (voir lib/auth.ts).
+app.addHook("onRequest", createAuthHook(agentToken));
 
 app.register(projectsRoute);
 app.register(secretsRoute);
